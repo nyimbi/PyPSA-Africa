@@ -366,6 +366,95 @@ re-investigated:
 
 ----
 
+Running on open-source solvers
+==============================
+
+The suite must run end to end without a commercial licence. Three things stood
+in the way, all now addressed.
+
+The ``solver`` column is optional
+---------------------------------
+
+``scenarios/Coal_Flexibilisation/scenarios_to_run.xlsx`` carries a ``solver``
+column; ``scenarios/ME IRP 2024/scenarios_to_run.xlsx`` does not. The old
+resolution was a bare double lookup:
+
+.. code:: python
+
+    SOLVER_NAME = snakemake.config["solver"][SCENARIO_SETUP["solver"]].pop("name")
+
+which raises ``KeyError`` for a workbook with no such column. A scenario set
+that predates the column could therefore never run, and the failure named
+neither the solver nor the valid options. Resolution now falls back to
+``config["solver"]["default"]`` when the column is absent or blank, and an
+unknown name raises with the list of configured solvers.
+
+``glpk``, ``scip`` and ``cbc`` were missing from ``config.yaml``
+----------------------------------------------------------------
+
+Only ``copt``, ``mindopt`` and ``highs`` had blocks, so any scenario naming an
+open-source solver other than HiGHS raised ``KeyError`` at the lookup above.
+Blocks for ``cbc``, ``glpk`` and ``scip`` are now defined alongside ``highs``,
+and ``default`` is ``highs`` — it runs in-process through ``highspy`` and needs
+no executable, unlike the three command-line solvers. Note that ``glpk``'s
+binary is ``glpsol``: linopy resolves the solver by the name ``glpk`` and then
+looks for ``glpsol`` on ``PATH``.
+
+``solver.options.clip_p_max_pu`` was dead
+-----------------------------------------
+
+The key appeared in ``config.yaml`` and in the upstream documentation's config
+tables, but nothing in ``scripts/``, ``pre_processing/`` or the ``Snakefile``
+read it, and PyPSA 0.35.2 has no such setting. It has been removed rather than
+left as a knob that appears to do something.
+
+The two scenario workbooks use different schemas
+------------------------------------------------
+
+``load_scenario_setup`` hard-coded ``index_col=[1]``. In
+``Coal_Flexibilisation`` that consumes the ``scenario`` column; in ``ME IRP
+2024`` it consumes ``run_scenario``, which then vanishes as a column. The
+identifier is now resolved by name (``scenario`` or the legacy ``wildcard``).
+
+Three further legacy differences are handled at load time:
+
+- ``co2_constraints`` and ``extendable_techs`` are the legacy spellings of
+  ``carbon_constraints`` and ``extendable_active``; they are renamed on load.
+- Fields introduced after the legacy schema default to their "feature off"
+  value. Only fields whose absence unambiguously means the feature was not part
+  of that study carry a default. A genuinely missing physical input — weather
+  years, fuel prices, emissions — still raises, because inventing a value there
+  would change results silently.
+- ``capacity_expansion_years`` is read by ``build_topology`` but appears in no
+  shipped workbook, so it was a guaranteed ``KeyError`` on the multi-region
+  path. It is now derived from the first year of ``simulation_years``.
+
+The ``Snakefile`` had the same problem in a different form: it selected
+``scenarios["scenario"]`` by name and filtered ``run_scenario == 1``, so a
+legacy workbook produced an empty frame and then ``IndexError: index 0 is out of
+bounds``. It now resolves the identifier from either the column or the index and
+raises an explicit error when no row is enabled.
+
+What is still missing
+---------------------
+
+ME IRP 2024 loads, but it cannot yet run to completion, and the gap is data
+rather than code. Its ``sub_scenarios/`` directory predates the current layout:
+it has no ``emissions.xlsx``, ``fuel_prices.xlsx``, ``weather.xlsx``,
+``phased_decommissioning.xlsx`` or ``aux_stg_feed.xlsx``, and those files exist
+nowhere else in the repository. The physical quantities they carry are partly
+present in the legacy layout — ``fixed_technologies.xlsx`` still holds ``Fuel
+Price (R/GJ)`` and ``CO2 Emissions (kgCO2/MWh)`` columns per station, and
+``plant_availability.xlsx`` carries a ``min_station_hrly_cap_fact`` sheet — but
+extracting them is a data migration that has to be checked against the source
+study, not a schema fix. Weather-year mapping has no legacy equivalent at all.
+
+So the honest status is: the *code* is backward compatible and the loader
+accepts both schemas; ME IRP 2024 needs its input workbooks rebuilt before a
+run will produce results.
+
+----
+
 A note on why these survived
 ============================
 
