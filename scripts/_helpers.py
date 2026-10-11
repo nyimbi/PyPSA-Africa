@@ -763,10 +763,14 @@ def drop_non_pypsa_attrs(n, c, df):
 
 def normalize_and_rename_df(df, snapshots, fillna, suffix=None):
     df = df.loc[snapshots]
-    df = (df / df.max()).fillna(fillna)
+    # Capture the maxima before dividing, and rename them alongside the columns
+    # so the caller can de-normalise a frame whose columns carry the suffix.
+    maxima = df.max()
+    df = (df / maxima).fillna(fillna)
     if suffix:
         df.columns += f'_{suffix}'
-    return df, df.max()
+        maxima.index += f'_{suffix}'
+    return df, maxima
 
 def find_string_entries(series):
     return series[series.apply(lambda x: isinstance(x, str))]#.index
@@ -776,9 +780,11 @@ def find_non_string_entries(series):
 
 def assign_segmented_df_to_network(df, search_str, replace_str, target):
     cols = df.columns[df.columns.str.contains(search_str)]
-    segmented = df[cols]
+    segmented = df[cols].copy()
     segmented.columns = segmented.columns.str.replace(search_str, replace_str)
-    target = segmented
+    # Write into the caller's frame in place; rebinding the name here would
+    # leave the network untouched.
+    target[segmented.columns] = segmented
 
 
 def get_start_year(sns, multi_invest):
