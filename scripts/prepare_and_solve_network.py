@@ -457,8 +457,8 @@ def solve_network(n, sns, full_outages_pu_max):
         add_coal_decom(n, start_limits, full_outages_pu_max)
         param = load_extendable_parameters(n, SCENARIO_SETUP, snakemake)
         if SCENARIO_SETUP["carbon_constraints"] not in ["None", "none", "", "-"]:
-            gen_emissions = pd.read_csv(snakemake.input["generator_emissioans"],index_col=[0])
-            add_annual_co2_constraints(n, sns, param, SCENARIO_SETUP, gen_emissions)
+            gen_emissions = pd.read_csv(snakemake.input["generator_emissions"],index_col=[0])
+            add_annual_co2_constraints(n, sns, SCENARIO_SETUP, gen_emissions)
 
 
     reserve_margin_constraints(n, sns, SCENARIO_SETUP, snakemake)
