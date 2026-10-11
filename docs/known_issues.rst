@@ -442,16 +442,64 @@ ME IRP 2024 loads, but it cannot yet run to completion, and the gap is data
 rather than code. Its ``sub_scenarios/`` directory predates the current layout:
 it has no ``emissions.xlsx``, ``fuel_prices.xlsx``, ``weather.xlsx``,
 ``phased_decommissioning.xlsx`` or ``aux_stg_feed.xlsx``, and those files exist
-nowhere else in the repository. The physical quantities they carry are partly
-present in the legacy layout — ``fixed_technologies.xlsx`` still holds ``Fuel
-Price (R/GJ)`` and ``CO2 Emissions (kgCO2/MWh)`` columns per station, and
-``plant_availability.xlsx`` carries a ``min_station_hrly_cap_fact`` sheet — but
-extracting them is a data migration that has to be checked against the source
-study, not a schema fix. Weather-year mapping has no legacy equivalent at all.
+nowhere else in the repository.
+
+**The quantities themselves are not missing, only their arrangement.** Each
+workbook the current code expects has its data present in a legacy location:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 30 48
+
+   * - Expected workbook
+     - Where the data lives
+     - What has to be done
+   * - ``emissions.xlsx``
+     - ``fixed_technologies.xlsx`` has ``CO2 Emissions (kgCO2/MWh)`` per
+       station; ``carbon_constraints.xlsx`` has ``fuel_emissions_intensity``
+       (kgCO2e/GJ per carrier) and a ``carbon_tax`` sheet;
+       ``extendable_technologies.xlsx`` has ``co2_emissions`` per carrier with
+       a ``source`` column
+     - Split into the four sheets the code reads:
+       ``fixed_generator_emissions``, ``extendable_generator_emissions``,
+       ``carbon_tax``, ``annual_carbon_constraint``
+   * - ``fuel_prices.xlsx``
+     - ``fixed_technologies.xlsx`` has ``Fuel Price (R/GJ)`` per station, but
+       only as a bare number
+     - Needed for the 80 of 375 stations whose price is ``'-'``.
+       ``find_string_entries`` treats *any* string as a named trajectory and
+       looks it up in this workbook, so ``'-'`` would raise a ``KeyError``
+       rather than being read as "no price"
+   * - ``weather.xlsx``
+     - No legacy equivalent
+     - Must be authored. The sheet maps each simulation year to a reference
+       weather year; ``Coal_Flexibilisation`` supplies a usable template
+   * - ``phased_decommissioning.xlsx``
+     - ``fixed_technologies.xlsx`` has ``Decommissioning Date`` per station,
+       but at *station* level, not the year-by-month schedule the code reads
+     - Needs reshaping from dates to the ``scenario, year, month, <station>``
+       schedule; the semantics differ and must be checked
+   * - ``aux_stg_feed.xlsx``
+     - No legacy equivalent
+     - Only read by ``ccgt_steam_constraints``, which is called
+       unconditionally; the allowable-carrier map must be authored
+
+The one genuine blocker is ``weather.xlsx``: the reference weather years feed
+renewable availability profiles built from ERA5, and there is no way to recover
+them from what ships. Everything else is a reshape of data that is present.
+
+``scenarios/ME IRP 2024/sub_scenarios/carbon_constraints.xlsx`` is itself worth
+noting: it is a well-formed workbook that nothing reads. Its
+``fuel_emissions_intensity`` sheet carries per-carrier emission factors by year
+with explicit units, and its ``carbon_tax`` sheet a full 2025-2050 trajectory in
+``R/tonCO2e``. It is orphaned by the rename from ``co2_constraints`` to
+``carbon_constraints``: the scenario column still uses the old name, and the
+file itself was never folded into ``emissions.xlsx``.
 
 So the honest status is: the *code* is backward compatible and the loader
-accepts both schemas; ME IRP 2024 needs its input workbooks rebuilt before a
-run will produce results.
+accepts both schemas, and ME IRP 2024's inputs are recoverable except for the
+weather-year mapping. Rebuilding the workbooks is a data migration that has to
+be checked against the source study, not a schema fix.
 
 ----
 
@@ -479,3 +527,114 @@ The general shape worth guarding against: a bare ``except Exception`` that logs 
 warning and returns (as in the global-limits lookup) converts a hard failure into
 a silently absent constraint. Where a constraint is the reason the function
 exists, absence should be fatal.
+
+----
+
+PyPSA 1.x migration
+===================
+
+The scripts were written against PyPSA 0.35.2. PyPSA 1.0 removed everything that
+had been deprecated through the 0.x line, and 1.4.0 is the current release, so
+the call sites below had to move. The cost is the API surface, not the version
+number: ``pypsa 1.4.0`` requires ``pandas>=3.0``, which pulls pandas 2.2 to 3.0
+and numpy 1.26 to 2.4 with it.
+
+Removed and relocated
+---------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 34 26
+
+   * - 0.35.2
+     - 1.x
+     - Sites
+   * - ``pypsa.io.import_components_from_dataframe(n, df, c)``
+     - ``n._import_components_from_df(df, c)``
+     - 8
+   * - ``n.madd(...)``
+     - ``n.add(...)``
+     - 4
+   * - ``n.multi_invest``
+     - ``n.has_investment_periods``
+     - 39
+   * - ``pypsa.descriptors.get_switchable_as_dense(n, c, a)``
+     - ``n.get_switchable_as_dense(c, a)``
+     - 23
+   * - ``pypsa.descriptors.get_activity_mask(n, c, sns)``
+     - ``n.components[c].get_activity_mask(sns)``
+     - 3
+   * - ``pypsa.descriptors.get_active_assets(n, c, y)``
+     - ``n.components[c].get_active_assets(y)``
+     - 11
+   * - ``n.component_attrs[c]``
+     - ``n.components[c].defaults``
+     - 3
+   * - ``pypsa.descriptors.Dict``
+     - ``pypsa.definitions.structures.Dict``
+     - 1
+   * - ``pypsa.networkclustering._make_consense``
+     - ``pypsa.clustering.spatial.make_consense``
+     - 1
+   * - ``pypsa.descriptors.expand_series``
+     - ``pypsa.common.expand_series``
+     - 0
+
+``n.multi_invest`` is the one worth spelling out. PyPSA 1.0 dropped the
+attribute and derives the same answer from the snapshots, so
+``n.has_investment_periods`` is a property that cannot be assigned.
+``base_network.py`` set it by hand — ``n.multi_invest = 1 if not isinstance(years,
+int) else 0`` — which raised on load, because an assignment to a read-only
+property on a class with ``__slots__`` is an ``AttributeError`` rather than a
+silent shadow. The assignment was redundant in any case: ``set_snapshots``
+already builds a ``MultiIndex`` when there is more than one year, which is
+exactly the condition the flag encoded.
+
+``expand_series`` is listed with zero sites because the import was dead in both
+files that carried it.
+
+Two functions were replaced rather than relocated
+-------------------------------------------------
+
+``single_year_network_copy`` was defined twice in ``_helpers.py`` (1012, 1096)
+and called from neither; its import in ``add_electricity.py`` was the only
+reference. Both copies walked the network component by component and called
+``n._retrieve_overridden_components()``, a private method 1.0 removed. PyPSA's
+own ``n.copy`` now takes the same three arguments the wrapper accepted, so both
+copies collapse to a delegation to it.
+
+``load_network`` builds a custom-component network through
+``pypsa.components.component_attrs`` and the ``override_components`` /
+``override_component_attrs`` constructor arguments. The module-level
+``component_attrs`` is gone in 1.x, so this path would raise — but nothing calls
+it and no config sets ``override_components``, so it is latent. It is left in
+place and recorded here rather than rewritten blind.
+
+Verification
+------------
+
+``tests/`` (26 cases) passes on pypsa 1.4.0 / pandas 3.0.3 / numpy 2.4.6 with no
+deprecation warnings. Beyond the unit suite, the paths the migration touched were
+exercised end to end on a synthetic network: multi-name ``n.add`` for carriers,
+generators, links and loads; ``get_switchable_as_dense``,
+``get_activity_mask`` and ``get_active_assets`` against their former
+module-level forms; ``single_year_network_copy``; and a full
+``optimize.create_model(linearized_unit_commitment=True)`` +
+``solve_model(solver_name="highs")`` round trip, which returns an optimal LP.
+
+``n.get_active_assets`` and ``n.components[c].get_active_assets`` both raise
+``ValueError: Investment period not in n.investment_periods`` when the network
+has no investment periods — identically in 0.35.2 and 1.4.0. The call sites
+guard on ``n.has_investment_periods`` first, so this is not reachable from the
+pipeline.
+
+Environment pins
+----------------
+
+``envs/environment.yaml`` moves to ``pypsa=1.4.*``, ``pandas=3.0.*``,
+``numpy=2.4.*`` and ``python>=3.11,<3.13`` (1.4.0 requires ``>=3.11``).
+``tsam`` is pinned to ``3.4.2`` deliberately: tsam 4.x removed
+``tsam.timeseriesaggregation``, the legacy ``TimeSeriesAggregation`` API that
+``add_electricity.py`` uses for temporal segmentation, while 3.4.2 still
+provides it and admits ``pandas<=3.0.3``. Pinning both ends is what keeps the
+segmentation code unchanged.

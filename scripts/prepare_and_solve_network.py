@@ -59,7 +59,7 @@ from linopy import LinearExpression, Variable, merge
 import numpy as np
 import pandas as pd
 import pypsa
-from pypsa.descriptors import get_switchable_as_dense as get_as_dense, expand_series, get_activity_mask
+from pypsa.common import expand_series
 from pypsa.optimization.common import reindex
 
 from _helpers import configure_logging, remove_leap_day, normalize_and_rename_df, assign_segmented_df_to_network, load_scenario_definition
@@ -80,7 +80,7 @@ from xarray import DataArray
 """
 def set_extendable_limits_global(n):
 
-    ext_years = n.investment_periods if n.multi_invest else [n.snapshots[0].year]
+    ext_years = n.investment_periods if n.has_investment_periods else [n.snapshots[0].year]
     sense = {"max": "<=", "min": ">="}
     ignore = {"max": "unc", "min": 0}
 
@@ -113,7 +113,7 @@ def set_extendable_limits_global(n):
                 "carrier_attribute": carrier,
                 "sense": sense[lim],
                 "type": "tech_capacity_expansion_limit",
-                **({"investment_period": y} if n.multi_invest else {}),
+                **({"investment_period": y} if n.has_investment_periods else {}),
                 "constant": global_limit.loc[carrier, y],
             }
             for carrier in global_limit.index
@@ -128,7 +128,7 @@ def set_extendable_limits_global(n):
 
 
 def set_extendable_limits_per_bus(n):
-    ext_years = n.investment_periods if n.multi_invest else [n.snapshots[0].year]
+    ext_years = n.investment_periods if n.has_investment_periods else [n.snapshots[0].year]
     ignore = {"max": "unc", "min": 0}
 
     try:
@@ -260,7 +260,7 @@ def add_coal_decom(n, start_limits, full_outages_pu_max):
     # Create a retirement variable index
     gen_retire_list=[]
     for y in n.investment_periods:
-        active = n.get_active_assets("Generator", y)
+        active = n.components["Generator"].get_active_assets(y)
         gens_i = [g for g in gens_df if g in active[active]]
         for g in gens_i:
             gen_retire_list.append(f"{g}_{y}")
@@ -278,7 +278,7 @@ def add_coal_decom(n, start_limits, full_outages_pu_max):
 
 
     for y in n.investment_periods:
-        active = n.get_active_assets("Generator", y) # Only take assets that have not yet reached end of life
+        active = n.components["Generator"].get_active_assets(y) # Only take assets that have not yet reached end of life
 
         gens_i = [g for g in gens_df if g in active[active]] # only apply constraints if station is active
         for gen in gens_i:
@@ -382,7 +382,7 @@ def set_operating_reserves(n, sns, SCENARIO_SETUP):
     
     status = n.model.variables["Generator-status"].rename({"Generator-com":"Generator"})
 
-    active = get_activity_mask(n, "Generator", sns, gens_i)
+    active = n.components["Generator"].get_activity_mask(sns, gens_i)
     active.index.name="snapshot"
     
     p_nom_fix = DataArray(n.generators.loc[fix_i, "p_nom"] * active[fix_i])
@@ -414,7 +414,7 @@ def set_operating_reserves(n, sns, SCENARIO_SETUP):
     fix_i = n.storage_units.query("p_nom_extendable == False").index
     ext_i = n.storage_units.query("p_nom_extendable == True").index
     st_i = n.storage_units.index
-    active = get_activity_mask(n, "StorageUnit", sns, st_i)
+    active = n.components["StorageUnit"].get_activity_mask(sns, st_i)
     active.index.name="snapshot"
 
     p_nom_st_fix = DataArray(n.storage_units.loc[fix_i, "p_nom"]) * DataArray(active[fix_i])
@@ -460,7 +460,7 @@ def set_operating_reserves(n, sns, SCENARIO_SETUP):
 
 def solve_network(n, sns, full_outages_pu_max):
 
-    n.optimize.create_model(snapshots = sns, multi_investment_periods = n.multi_invest, linearized_unit_commitment = True)    
+    n.optimize.create_model(snapshots = sns, multi_investment_periods = n.has_investment_periods, linearized_unit_commitment = True)    
 
     set_operational_limits(n, sns, SCENARIO_SETUP, snakemake)
     ccgt_steam_constraints(n, sns, SCENARIO_SETUP, snakemake)
