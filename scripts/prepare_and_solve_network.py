@@ -532,8 +532,25 @@ if __name__ == "__main__":
 
     SCENARIO_SETUP = load_scenario_definition(snakemake.wildcards.scenario, snakemake.config)
 
-    SOLVER_NAME = snakemake.config["solver"][SCENARIO_SETUP["solver"]].pop("name")
-    SOLVER_OPTIONS = snakemake.config["solver"][SCENARIO_SETUP["solver"]].copy()
+    # A scenario definition may name its own solver, or leave the choice to
+    # config["solver"]["default"] when the column is absent or blank. Either way
+    # the value is a key into the solver block, so a misspelling fails here with
+    # the list of valid names rather than deep inside linopy.
+    solver_key = SCENARIO_SETUP.get("solver")
+    if solver_key is None or str(solver_key).strip().lower() in ("none", "nan", ""):
+        solver_key = snakemake.config["solver"]["default"]
+    if solver_key not in snakemake.config["solver"]:
+        available = sorted(
+            k for k, v in snakemake.config["solver"].items()
+            if isinstance(v, dict) and "name" in v
+        )
+        raise KeyError(
+            f"Scenario {snakemake.wildcards.scenario!r} asks for solver "
+            f"{solver_key!r}, which is not defined under `solver` in config.yaml. "
+            f"Available: {available}"
+        )
+    SOLVER_NAME = snakemake.config["solver"][solver_key].pop("name")
+    SOLVER_OPTIONS = snakemake.config["solver"][solver_key].copy()
 
 
     logging.info("Setting global and regional build limits")
